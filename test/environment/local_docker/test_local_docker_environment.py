@@ -308,3 +308,114 @@ EOF"""
         # Test copying non-existent file
         success = shared_env.copy_from_container("/nonexistent/file.txt", "/tmp/fail.txt")
         assert success is False
+
+    @pytest.mark.integration
+    @pytest.mark.docker
+    @pytest.mark.slow
+    def test_inactivity_timeout_shuts_down_container(self):
+        """Test that container shuts down after inactivity timeout"""
+        import time
+
+        # Find an available port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+
+        # Create environment with very short timeout (0.2 minutes = 12 seconds)
+        # Conservative timing to handle slow CI systems
+        env = LocalDockerEnvironment(port=port, inactivity_timeout_minutes=0.2)
+
+        try:
+            # Wait for container to be ready
+            time.sleep(2)
+
+            # Verify container is running
+            env.container.reload()
+            assert env.container.status == 'running'
+
+            # Execute a command to ensure it's working
+            result = env.execute("echo 'test'")
+            assert result.return_code == 0
+
+            # Now wait for inactivity timeout to kick in
+            # 12s timeout + check interval + buffer for uvicorn graceful shutdown
+            print("Waiting for inactivity timeout to trigger...")
+            time.sleep(18)  # Wait slightly longer than timeout
+
+            # Give uvicorn more time to gracefully shut down after SIGINT
+            max_wait = 15  # Maximum additional seconds to wait
+            wait_interval = 2
+            shutdown_detected = False
+
+            for i in range(max_wait // wait_interval):
+                env.container.reload()
+                status = env.container.status
+                print(f"Container status check {i+1}: {status}")
+
+                if status in ['exited', 'stopped', 'dead']:
+                    shutdown_detected = True
+                    print("Container shut down gracefully after inactivity timeout")
+                    break
+
+                time.sleep(wait_interval)
+
+            assert shutdown_detected, f"Container did not shut down within {10 + max_wait}s of inactivity"
+
+        finally:
+            # Cleanup - stop will handle already-stopped containers gracefully
+            try:
+                env.stop()
+            except Exception as e:
+                print(f"Cleanup error (expected if already stopped): {e}")
+
+    @pytest.mark.integration
+    @pytest.mark.docker
+    @pytest.mark.slow
+    def test_inactivity_timeout_keeps_container_alive_with_activity(self):
+        """Test that container stays alive when there's activity within timeout period"""
+        import time
+
+        # Find an available port
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            s.listen(1)
+            port = s.getsockname()[1]
+
+        # Create environment with short timeout (0.3 minutes = 18 seconds)
+        # Conservative timing to handle slow CI systems
+        env = LocalDockerEnvironment(port=port, inactivity_timeout_minutes=0.3)
+
+        try:
+            # Wait for container to be ready
+            time.sleep(2)
+
+            # Verify container is running
+            env.container.reload()
+            assert env.container.status == 'running'
+
+            # Keep sending commands to maintain activity over 40 seconds (2x+ timeout of 18s)
+            total_duration = 40
+            check_interval = 5  # Send command every 5 seconds
+            elapsed = 0
+
+            print("Sending periodic commands to maintain activity...")
+            while elapsed < total_duration:
+                result = env.execute("echo 'keeping alive'")
+                assert result.return_code == 0
+                print(f"Activity at {elapsed}s - container still alive")
+
+                time.sleep(check_interval)
+                elapsed += check_interval
+
+                # Verify container is still running
+                env.container.reload()
+                assert env.container.status == 'running', f"Container died unexpectedly at {elapsed}s"
+
+            print(f"Container stayed alive for {total_duration}s with periodic activity")
+
+        finally:
+            try:
+                env.stop()
+            except Exception as e:
+                print(f"Cleanup error: {e}")

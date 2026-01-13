@@ -22,6 +22,7 @@ class LocalDockerEnvironment(Environment):
         port: int,
         folder_to_mount: Optional[Mount] = None,
         image: str = "kavyasree261002/shell_server:latest",
+        inactivity_timeout_minutes: float = 60,
     ):
 
         self.image = image
@@ -32,6 +33,12 @@ class LocalDockerEnvironment(Environment):
         self.port = port  # required host port
         self.container_port = 8080
         self.deleted = False
+
+        # Validate timeout is positive
+        if inactivity_timeout_minutes <= 0:
+            raise ValueError(f"inactivity_timeout_minutes must be positive, got {inactivity_timeout_minutes}")
+
+        self.inactivity_timeout_minutes = inactivity_timeout_minutes
         self._create_working_dir()
         self.start()
 
@@ -74,20 +81,29 @@ class LocalDockerEnvironment(Environment):
         # Port mapping
         port_mapping = {f"{self.container_port}/tcp": self.port}
 
+        # Auto-remove container when it exits (can be disabled for debugging via env var)
+        auto_remove = os.getenv("DISABLE_AUTO_REMOVE_CONTAINERS", "false").lower() != "true"
+
         self.container = self.client.containers.run(
             self.image,
             volumes=volumes_config,
             ports=port_mapping,
             detach=True,
+            auto_remove=auto_remove,
             working_dir="/app",
             privileged=True,  # Required for mounting overlayfs
-            environment={"BOT_PORT": str(self.container_port)},
+            environment={
+                "BOT_PORT": str(self.container_port),
+                "INACTIVITY_TIMEOUT_MINUTES": str(self.inactivity_timeout_minutes),
+            },
         )
         logger.info(
-            "🚀 Started container %s with image %s on host port %s",
+            "🚀 Started container %s with image %s on host port %s (timeout: %dm, auto_remove: %s)",
             self.container.id[:12],
             self.image,
             self.port,
+            self.inactivity_timeout_minutes,
+            auto_remove,
         )
         time.sleep(2)  # Give some time for the server to start
 
