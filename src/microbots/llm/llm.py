@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from abc import ABC, abstractmethod
-import json
 from logging import getLogger
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 logger = getLogger(__name__)
 
@@ -19,6 +19,36 @@ class LLMAskResponse:
     task_done: bool = False
     thoughts: str = ""
     command: str = ""
+
+
+class LLMAskResponseModel(BaseModel):
+    """Pydantic model for structured output validation"""
+    model_config = ConfigDict(extra='forbid', strict=True)  # Prevents additional fields, strict type checking
+
+    task_done: bool = Field(
+        description="Set to true only when the entire task is complete and no more commands need to be executed. Set to false if you need to run more commands."
+    )
+    thoughts: str | None = Field(
+        default=None,
+        description="Your reasoning, observations, or analysis. Explain what you learned from command outputs, what you're planning to do next, or why you're taking a particular action."
+    )
+    command: str = Field(
+        description="The shell command to execute (when task_done=false). Must be empty string when task_done=true. Use clear, specific commands. Available: cd, ls, cat, grep, find, sed, echo, python, pytest, git, etc."
+    )
+
+    @field_validator('command')
+    @classmethod
+    def validate_command(cls, v: str, info) -> str:
+        """Validate command field based on task_done state"""
+        task_done = info.data.get('task_done', False)
+
+        if task_done and v.strip():
+            raise ValueError("Command must be empty when task_done is true")
+
+        if not task_done and not v.strip():
+            raise ValueError("Command must be non-empty when task_done is false")
+
+        return v
 
 class LLMInterface(ABC):
     def __init__(self, system_prompt: str, max_retries: int = 3):
@@ -39,62 +69,6 @@ class LLMInterface(ABC):
     @abstractmethod
     def clear_history(self) -> bool:
         pass
-
-    def _validate_llm_response(self, response: str) -> tuple[bool, LLMAskResponse]:
-
-        if self.retries >= self.max_retries:
-            logger.error("Maximum retries reached for LLM response validation.")
-            raise Exception("LLM is not responding in expected format. Maximum retries reached.")
-
-        try:
-            response_dict = json.loads(response)
-        except json.JSONDecodeError:
-            self.retries += 1
-            logger.warning("LLM response is not valid JSON. Retrying... (%d/%d)", self.retries, self.max_retries)
-            self.messages.append({"role": "user", "content": "LLM_RES_ERROR: Please respond in the correct JSON format.\n" + llm_output_format_str})
-            return False, None
-
-        if all(key in response_dict for key in LLMAskResponse.__annotations__.keys()):
-            logger.debug("The llm response is %s ", response_dict)
-
-            if response_dict.get("task_done") not in [True, False]:
-                self.retries += 1
-                logger.warning("LLM response 'task_done' field is not a boolean. Retrying... (%d/%d)", self.retries, self.max_retries)
-                self.messages.append({"role": "user", "content": "LLM_RES_ERROR: Please ensure 'task_done' is a boolean (true/false).\n" + llm_output_format_str})
-                return False, None
-
-            if (
-                response_dict.get("task_done") is False
-                and (
-                    response_dict.get("command") is None
-                    or not isinstance(response_dict.get("command"), str)
-                    or response_dict.get("command").strip() == ""
-                    )
-            ):
-                self.retries += 1
-                logger.warning("LLM response 'command' field is invalid. Retrying... (%d/%d)", self.retries, self.max_retries)
-                self.messages.append({"role": "user", "content": "LLM_RES_ERROR: Please ensure 'command' is a non-empty string.\n" + llm_output_format_str})
-                return False, None
-
-            if (response_dict.get("task_done") is True):
-                command = response_dict.get("command", None)
-                if command is not None and command.strip() != "":
-                    self.retries += 1
-                    logger.warning("LLM response 'command' should be empty when 'task_done' is true. Retrying... (%d/%d)", self.retries, self.max_retries)
-                    self.messages.append({"role": "user", "content": "LLM_RES_ERROR: When 'task_done' is true, 'command' should be an empty string.\nYou should set 'task_done' to true only when even the last command got executed successfully.\nExpected output format:\n" + llm_output_format_str})
-                    return False, None
-
-            llm_response = LLMAskResponse(
-                task_done=response_dict["task_done"],
-                command=response_dict["command"],
-                thoughts=response_dict.get("thoughts"),
-            )
-            return True, llm_response
-        else:
-            self.retries += 1
-            logger.warning("LLM response is missing required fields. Retrying... (%d/%d)", self.retries, self.max_retries)
-            self.messages.append({"role": "user", "content": "LLM_RES_ERROR: LLM response is missing required fields. Please respond in the correct JSON format.\n" + llm_output_format_str})
-            return False, None
 
     def summarize_context(self, last_n_messages: int = 10, summary: str="") -> dict:
         """

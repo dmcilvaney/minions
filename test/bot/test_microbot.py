@@ -47,12 +47,14 @@ You must send `task_done` as true only when you have completed the task. It mean
 @pytest.fixture(scope="function")
 def no_mount_microBot():
     local_model = os.getenv('LOCAL_MODEL_NAME', 'qwen2.5-coder:latest').replace(':latest', '')
-    bot = MicroBot(
-        model=f"ollama-local/{local_model}",
-        system_prompt=SYSTEM_PROMPT,
-    )
-    yield bot
-    del bot
+    # Patch Ollama environment variables for tests that don't need actual Ollama
+    with patch.dict(os.environ, {'LOCAL_MODEL_NAME': local_model, 'LOCAL_MODEL_PORT': '11434'}):
+        bot = MicroBot(
+            model=f"ollama-local/{local_model}",
+            system_prompt=SYSTEM_PROMPT,
+        )
+        yield bot
+        del bot
 
 
 @pytest.mark.integration
@@ -76,13 +78,15 @@ class TestMicrobotIntegration:
     @pytest.fixture(scope="function")
     def ro_microBot(self, ro_mount: Mount):
         local_model = os.getenv('LOCAL_MODEL_NAME', 'qwen2.5-coder:latest').replace(':latest', '')
-        bot = MicroBot(
-            model=f"ollama-local/{local_model}",
-            system_prompt=SYSTEM_PROMPT,
-            folder_to_mount=ro_mount,
-        )
-        yield bot
-        del bot
+        # Patch Ollama environment variables for tests that don't call LLM
+        with patch.dict(os.environ, {'LOCAL_MODEL_NAME': local_model, 'LOCAL_MODEL_PORT': '11434'}):
+            bot = MicroBot(
+                model=f"ollama-local/{local_model}",
+                system_prompt=SYSTEM_PROMPT,
+                folder_to_mount=ro_mount,
+            )
+            yield bot
+            del bot
 
     @pytest.fixture(scope="function")
     def anthropic_microBot(self):
@@ -215,6 +219,7 @@ class TestMicrobotIntegration:
             assert isinstance(bot.llm, AnthropicApi)
             del bot
 
+    @pytest.mark.ollama_local
     def test_summarize_context_invalid_syntax_asks_llm_to_retry(self, no_mount_microBot, caplog):
         """Integration test: LLM sends invalid summarize_context syntax, bot asks LLM to correct it.
 
@@ -287,6 +292,7 @@ class TestMicrobotIntegration:
         # Verify error message was logged
         assert "Invalid summarize_context syntax" in caplog.text or call_count[0] >= 2
 
+    @pytest.mark.ollama_local
     def test_summarize_context_various_invalid_syntaxes(self, no_mount_microBot):
         """Integration test: Various invalid summarize_context syntaxes are properly rejected.
 

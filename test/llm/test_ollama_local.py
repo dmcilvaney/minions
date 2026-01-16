@@ -61,7 +61,7 @@ class TestOllamaLocalInitialization:
     def test_init_without_model_name_raises_error(self, monkeypatch):
         """Test that initialization without model_name raises ValueError"""
         system_prompt = "You are a helpful assistant"
-        
+
         # Clear environment variables
         monkeypatch.delenv("LOCAL_MODEL_NAME", raising=False)
 
@@ -75,7 +75,7 @@ class TestOllamaLocalInitialization:
     def test_init_without_model_port_raises_error(self, monkeypatch):
         """Test that initialization without model_port raises ValueError"""
         system_prompt = "You are a helpful assistant"
-        
+
         # Clear environment variables
         monkeypatch.delenv("LOCAL_MODEL_PORT", raising=False)
 
@@ -89,7 +89,7 @@ class TestOllamaLocalInitialization:
     def test_init_without_both_params_raises_error(self, monkeypatch):
         """Test that initialization without both params raises ValueError"""
         system_prompt = "You are a helpful assistant"
-        
+
         # Clear environment variables
         monkeypatch.delenv("LOCAL_MODEL_NAME", raising=False)
         monkeypatch.delenv("LOCAL_MODEL_PORT", raising=False)
@@ -282,7 +282,7 @@ class TestOllamaLocalAsk:
 
     @patch('microbots.llm.ollama_local.requests.post')
     def test_ask_resets_retries(self, mock_post):
-        """Test that ask resets retries at the start"""
+        """Test that ask works correctly with structured output (retries no longer used)"""
         system_prompt = "You are a helpful assistant"
         ollama = OllamaLocal(
             system_prompt=system_prompt,
@@ -292,7 +292,7 @@ class TestOllamaLocalAsk:
 
         ollama.retries = 5  # Simulate previous retries
 
-        # Mock successful response
+        # Mock successful response with structured output
         mock_response = Mock()
         mock_response.status_code = 200
         mock_response.text = "Success"
@@ -301,13 +301,17 @@ class TestOllamaLocalAsk:
         }
         mock_post.return_value = mock_response
 
-        ollama.ask("List files")
+        result = ollama.ask("List files")
 
-        assert ollama.retries == 0
+        # Verify the response is correct (structured output eliminates need for retries)
+        assert result.task_done is False
+        assert result.command == "ls"
+        assert result.thoughts == "Listing files"
 
     @patch('microbots.llm.ollama_local.requests.post')
     def test_ask_retries_on_invalid_response(self, mock_post):
-        """Test that ask retries on invalid JSON response"""
+        """Test that ask raises ValidationError on invalid JSON response with structured output"""
+        from pydantic import ValidationError
         system_prompt = "You are a helpful assistant"
         ollama = OllamaLocal(
             system_prompt=system_prompt,
@@ -316,32 +320,18 @@ class TestOllamaLocalAsk:
             max_retries=2
         )
 
-        # Mock invalid response first, then valid
-        mock_response_invalid = Mock()
-        mock_response_invalid.status_code = 200
-        mock_response_invalid.text = "Invalid response"
-        mock_response_invalid.json.return_value = {
+        # Mock invalid JSON response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = "Invalid response"
+        mock_response.json.return_value = {
             "response": 'This is not JSON'
         }
+        mock_post.return_value = mock_response
 
-        mock_response_valid = Mock()
-        mock_response_valid.status_code = 200
-        mock_response_valid.text = "Success"
-        mock_response_valid.json.return_value = {
-            "response": '{"task_done": true, "command": "", "thoughts": "Completed"}'
-        }
-
-        mock_post.side_effect = [mock_response_invalid, mock_response_valid]
-
-        result = ollama.ask("Echo done")
-
-        assert isinstance(result, LLMAskResponse)
-        assert result.task_done is True
-        assert result.command == ""
-        assert result.thoughts == "Completed"
-
-        # Verify retries count
-        assert ollama.retries == 1  # One retry before success
+        # With structured output, invalid JSON raises ValidationError immediately
+        with pytest.raises(ValidationError):
+            ollama.ask("Echo done")
 
 
 @pytest.mark.ollama_local
@@ -393,5 +383,68 @@ class TestOllamaLocalIntegration:
         assert ollama.messages[0]["role"] == "system"
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+@pytest.mark.unit
+class TestOllamaLocalValidation:
+    """Tests for validation error handling in Ollama Local"""
+
+    def test_invalid_response_task_done_true_with_command(self):
+        """Test that Pydantic validation catches invalid response: task_done=True with non-empty command"""
+        from pydantic import ValidationError
+        from microbots.llm.llm import LLMAskResponseModel
+
+        system_prompt = "You are a helpful assistant"
+        ollama = OllamaLocal(
+            system_prompt=system_prompt,
+            model_name=LOCAL_MODEL_NAME,
+            model_port=LOCAL_MODEL_PORT
+        )
+
+        # Try to create invalid model - should raise ValidationError
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel(task_done=True, command="ls -la", thoughts="Invalid")
+
+        assert 'command' in str(exc_info.value)
+        assert 'empty' in str(exc_info.value).lower()
+
+    def test_invalid_response_task_done_false_with_empty_command(self):
+        """Test that Pydantic validation catches invalid response: task_done=False with empty command"""
+        from pydantic import ValidationError
+        from microbots.llm.llm import LLMAskResponseModel
+
+        system_prompt = "You are a helpful assistant"
+        ollama = OllamaLocal(
+            system_prompt=system_prompt,
+            model_name=LOCAL_MODEL_NAME,
+            model_port=LOCAL_MODEL_PORT
+        )
+
+        # Try to create invalid model - should raise ValidationError
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel(task_done=False, command="", thoughts="Invalid")
+
+        assert 'command' in str(exc_info.value)
+        assert 'non-empty' in str(exc_info.value).lower()
+
+    @patch('microbots.llm.ollama_local.requests.post')
+    def test_api_propagates_validation_error(self, mock_post):
+        """Test that ValidationError from invalid JSON propagates correctly"""
+        from pydantic import ValidationError
+
+        system_prompt = "You are a helpful assistant"
+        ollama = OllamaLocal(
+            system_prompt=system_prompt,
+            model_name=LOCAL_MODEL_NAME,
+            model_port=LOCAL_MODEL_PORT
+        )
+
+        # Mock the API to return invalid JSON that fails Pydantic validation
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "response": '{"task_done": true, "command": "ls -la", "thoughts": "Invalid"}'
+        }
+        mock_post.return_value = mock_response
+
+        # The ask() method should raise ValidationError when parsing invalid response
+        with pytest.raises(ValidationError):
+            ollama.ask("test message")

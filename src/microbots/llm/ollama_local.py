@@ -34,7 +34,7 @@ import os
 from dataclasses import asdict
 
 from dotenv import load_dotenv
-from microbots.llm.llm import LLMAskResponse, LLMInterface, llm_output_format_str
+from microbots.llm.llm import LLMAskResponse, LLMAskResponseModel, LLMInterface
 import requests
 import logging
 
@@ -53,23 +53,19 @@ class OllamaLocal(LLMInterface):
         super().__init__(system_prompt=system_prompt, max_retries=max_retries)
 
     def ask(self, message) -> LLMAskResponse:
-        self.retries = 0  # reset retries for each ask. Handled in parent class.
-
         self.messages.append({"role": "user", "content": message})
 
-        # TODO: If the retry count is maintained here, all the wrong responses from the history
-        # can be removed. It will be a natural history cleaning process.
-        valid = False
-        while not valid and self.retries < self.max_retries:
-            response = self._send_request_to_local_model(self.messages)
-            self.messages.append({"role": "assistant", "content": response})
-            valid, askResponse = self._validate_llm_response(response=response)
+        response = self._send_request_to_local_model(self.messages)
 
-        if not valid and self.retries >= self.max_retries:
-            raise Exception("Max retries reached. Failed to get valid response from local model.")
+        # Parse JSON response with Pydantic validation
+        parsed = LLMAskResponseModel.model_validate_json(response)
 
-        # Remove last assistant message and replace with structured response
-        self.messages.pop()
+        askResponse = LLMAskResponse(
+            task_done=parsed.task_done,
+            command=parsed.command,
+            thoughts=parsed.thoughts or "",  # Convert None to empty string
+        )
+
         self.messages.append({"role": "assistant", "content": json.dumps(asdict(askResponse))})
 
         return askResponse
@@ -90,7 +86,8 @@ class OllamaLocal(LLMInterface):
         payload = {
             "model": self.model_name,
             "prompt": json.dumps(messages),
-            "stream": False
+            "stream": False,
+            "format": LLMAskResponseModel.model_json_schema(),
         }
         headers = {
             "Content-Type": "application/json"
@@ -104,19 +101,3 @@ class OllamaLocal(LLMInterface):
             return response_json.get("response", "")
         else:
             raise Exception(f"Error from local model server: {response.status_code} - {response.text}")
-
-    def _validate_llm_response(self, response):
-        # However, as instructed, Ollama is not providing the response only in JSON.
-        # It adds some extra text above or below the JSON sometimes.
-        # So, this hack extracts the JSON part from the response.
-        try:
-            response = response.split("{", 1)[1]
-            response = "{" + response.rsplit("}", 1)[0] + "}"
-        except Exception as e:
-            self.retries += 1
-            logger.warning("No JSON in LLM response.\nException: %s\nRetrying... (%d/%d)", e, self.retries, self.max_retries)
-            self.messages.append({"role": "user", "content": "LLM_RES_ERROR: Please respond in the following JSON format.\n" + llm_output_format_str})
-            return False, None
-
-        logger.debug(f"\nResponse from local model: {response}")
-        return super()._validate_llm_response(response)

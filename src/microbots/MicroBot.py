@@ -7,6 +7,8 @@ from enum import StrEnum
 from logging import getLogger
 from typing import Optional
 
+from pydantic import ValidationError
+
 from microbots.constants import ModelProvider
 from microbots.environment.local_docker.LocalDockerEnvironment import (
     LocalDockerEnvironment,
@@ -197,7 +199,17 @@ class MicroBot:
         # start timer
         start_time = time.time()
         timeout = timeout_in_seconds
-        llm_response = self.llm.ask(task)
+
+        try:
+            llm_response = self.llm.ask(task)
+        except ValidationError as e:
+            logger.error("%s Pydantic validation error on initial LLM response: %s", LogLevelEmoji.ERROR, e)
+            return BotRunResult(
+                status=False,
+                result=None,
+                error=f"Invalid LLM response format: {str(e)}",
+            )
+
         return_value = BotRunResult(
             status=False,
             result=None,
@@ -239,11 +251,31 @@ class MicroBot:
                 if parsed_args is None:
                     # Invalid syntax - ask LLM to correct it
                     error_msg = self._get_summarize_context_syntax_error(llm_response.command)
-                    llm_response = self.llm.ask(error_msg)
+                    try:
+                        llm_response = self.llm.ask(error_msg)
+                    except ValidationError as e:
+                        logger.error("%s Pydantic validation error: %s", LogLevelEmoji.ERROR, e)
+                        error_detail = self._format_validation_error(e)
+                        try:
+                            llm_response = self.llm.ask(f"VALIDATION_ERROR: Your previous response had invalid format.\n{error_detail}\nPlease provide a valid response.")
+                        except ValidationError:
+                            # Second validation failure - give up this iteration
+                            logger.error("%s Multiple validation failures, skipping iteration", LogLevelEmoji.ERROR)
+                            continue
                     continue
                 last_n_messages, summary = parsed_args
                 last_msg = self.llm.summarize_context(last_n_messages=last_n_messages, summary=summary)
-                llm_response = self.llm.ask(last_msg["content"])
+                try:
+                    llm_response = self.llm.ask(last_msg["content"])
+                except ValidationError as e:
+                    logger.error("%s Pydantic validation error: %s", LogLevelEmoji.ERROR, e)
+                    error_detail = self._format_validation_error(e)
+                    try:
+                        llm_response = self.llm.ask(f"VALIDATION_ERROR: Your previous response had invalid format.\n{error_detail}\nPlease provide a valid response.")
+                    except ValidationError:
+                        # Second validation failure - give up this iteration
+                        logger.error("%s Multiple validation failures, skipping iteration", LogLevelEmoji.ERROR)
+                        continue
                 continue
 
             # Validate command for dangerous operations
@@ -251,7 +283,17 @@ class MicroBot:
             if not is_safe:
                 error_msg = f"Dangerous command detected and blocked: {llm_response.command}\n{explanation}"
                 logger.info("%s %s", LogLevelEmoji.WARNING, error_msg)
-                llm_response = self.llm.ask(f"COMMAND_ERROR: {error_msg}\nPlease provide a safer alternative command.")
+                try:
+                    llm_response = self.llm.ask(f"COMMAND_ERROR: {error_msg}\nPlease provide a safer alternative command.")
+                except ValidationError as e:
+                    logger.error("%s Pydantic validation error: %s", LogLevelEmoji.ERROR, e)
+                    error_detail = self._format_validation_error(e)
+                    try:
+                        llm_response = self.llm.ask(f"VALIDATION_ERROR: Your previous response had invalid format.\n{error_detail}\nPlease provide a valid response.")
+                    except ValidationError:
+                        # Second validation failure - give up this iteration
+                        logger.error("%s Multiple validation failures, skipping iteration", LogLevelEmoji.ERROR)
+                        continue
                 continue
 
             llm_command_output = self.environment.execute(llm_response.command)
@@ -279,7 +321,17 @@ class MicroBot:
                 output_text = f"COMMAND EXECUTION FAILED\nreturn code: {llm_command_output.return_code}\nstdout: {llm_command_output.stdout}\nstderr: {llm_command_output.stderr}"
 
             logger.info(" ⬅️  Command output:\n%s", output_text)
-            llm_response = self.llm.ask(output_text)
+            try:
+                llm_response = self.llm.ask(output_text)
+            except ValidationError as e:
+                logger.error("%s Pydantic validation error: %s", LogLevelEmoji.ERROR, e)
+                error_detail = self._format_validation_error(e)
+                try:
+                    llm_response = self.llm.ask(f"VALIDATION_ERROR: Your previous response had invalid format.\n{error_detail}\nPlease provide a valid response.")
+                except ValidationError:
+                    # Second validation failure - give up this iteration
+                    logger.error("%s Multiple validation failures, skipping iteration", LogLevelEmoji.ERROR)
+                    continue
 
         if llm_response.thoughts:
             logger.info(
@@ -483,3 +535,31 @@ Please send the command again with correct syntax."""
         explanation = self._get_dangerous_command_explanation(command)
         is_safe = explanation is None
         return is_safe, explanation
+
+    def _format_validation_error(self, error: ValidationError) -> str:
+        """Format a Pydantic ValidationError into a clear message for the LLM.
+
+        Args:
+            error: The ValidationError from Pydantic validation
+
+        Returns:
+            A formatted error message explaining what went wrong
+        """
+        errors = error.errors()
+        if not errors:
+            return str(error)
+
+        # Extract the most relevant error information
+        first_error = errors[0]
+        field = first_error.get('loc', ['unknown'])[0]
+        msg = first_error.get('msg', 'Invalid value')
+
+        # Provide specific guidance based on the error
+        if 'task_done' in str(field) and 'command' in msg.lower():
+            return (
+                f"Field '{field}': {msg}\n"
+                "Remember: When task_done is true, command must be empty. "
+                "When task_done is false, command must be non-empty."
+            )
+
+        return f"Field '{field}': {msg}"

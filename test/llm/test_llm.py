@@ -22,7 +22,7 @@ class ConcreteLLM(LLMInterface):
 
     def ask(self, message: str) -> LLMAskResponse:
         """Simple implementation for testing"""
-        return LLMAskResponse(task_done=False, command="test", thoughts=None)
+        return LLMAskResponse(task_done=False, command="test", thoughts="")
 
     def clear_history(self) -> bool:
         """Simple implementation for testing"""
@@ -60,152 +60,147 @@ class TestLlmAskResponse:
 
 @pytest.mark.unit
 class TestValidateLlmResponse:
-    """Tests for LLMInterface._validate_llm_response method"""
+    """Tests for Pydantic validation behavior (replaces old _validate_llm_response tests)"""
 
-    @pytest.fixture
-    def llm(self):
-        """Create a concrete LLM instance for testing"""
-        return ConcreteLLM(max_retries=3)
-
-    def test_valid_response_task_not_done(self, llm):
+    def test_valid_response_task_not_done(self):
         """Test validation of a valid response with task_done=False"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "echo 'hello world'",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        # Should parse successfully
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.task_done is False
+        assert parsed.command == "echo 'hello world'"
+        assert parsed.thoughts is None
 
-        assert valid is True
-        assert llm_response.task_done is False
-        assert llm_response.command == "echo 'hello world'"
-        assert llm_response.thoughts is None
-        assert llm.retries == 0
-
-    def test_valid_response_task_done(self, llm):
+    def test_valid_response_task_done(self):
         """Test validation of a valid response with task_done=True"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": True,
             "command": "",
             "thoughts": "Task completed successfully"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.task_done is True
+        assert parsed.command == ""
+        assert parsed.thoughts == "Task completed successfully"
 
-        assert valid is True
-        assert llm_response.task_done is True
-        assert llm_response.command == ""
-        assert llm_response.thoughts == "Task completed successfully"
-        assert llm.retries == 0
-
-    def test_invalid_json(self, llm):
+    def test_invalid_json(self):
         """Test validation with invalid JSON"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = "This is not valid JSON { invalid }"
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises((ValidationError, ValueError, json.JSONDecodeError)):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert len(llm.messages) == 1
-        assert "LLM_RES_ERROR" in llm.messages[0]["content"]
-        assert "correct JSON format" in llm.messages[0]["content"]
-
-    def test_missing_required_fields(self, llm):
+    def test_missing_required_fields(self):
         """Test validation with missing required fields"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             # Missing "command" and "thoughts"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert len(llm.messages) == 1
-        assert "missing required fields" in llm.messages[0]["content"]
+        errors = exc_info.value.errors()
+        assert any(error['loc'][0] == 'command' for error in errors)
 
-    def test_task_done_not_boolean(self, llm):
+    def test_task_done_not_boolean(self):
         """Test validation when task_done is not a boolean"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": "yes",  # Should be boolean
             "command": "echo test",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "task_done" in llm.messages[0]["content"]
-        assert "boolean" in llm.messages[0]["content"]
+        assert any(error['loc'][0] == 'task_done' for error in exc_info.value.errors())
 
-    def test_empty_command_when_task_not_done(self, llm):
+    def test_empty_command_when_task_not_done(self):
         """Test validation when command is empty but task_done is False"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": "",  # Empty command
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "command" in llm.messages[0]["content"]
-        assert "non-empty string" in llm.messages[0]["content"]
+        assert 'command' in str(exc_info.value)
+        assert 'non-empty' in str(exc_info.value).lower()
 
-    def test_whitespace_only_command_when_task_not_done(self, llm):
+    def test_whitespace_only_command_when_task_not_done(self):
         """Test validation when command is whitespace only but task_done is False"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": "   ",  # Whitespace only
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_null_command_when_task_not_done(self, llm):
+    def test_null_command_when_task_not_done(self):
         """Test validation when command is null but task_done is False"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": None,  # Null command
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_non_empty_command_when_task_done(self, llm):
+    def test_non_empty_command_when_task_done(self):
         """Test validation when command is not empty but task_done is True"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": True,
             "command": "echo 'should not have this'",  # Should be empty
             "thoughts": "Done"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "command" in llm.messages[0]["content"]
-        assert "empty string" in llm.messages[0]["content"]
+        assert 'command' in str(exc_info.value)
+        assert 'empty' in str(exc_info.value).lower()
 
-    def test_max_retries_exceeded(self, llm):
-        """Test that exception is raised when max retries is exceeded"""
-        llm.retries = 3  # Set to max
+    def test_max_retries_exceeded(self):
+        """Test that Pydantic raises ValidationError (no retry logic in Pydantic)"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
         response = json.dumps({
             "task_done": False,
@@ -213,157 +208,154 @@ class TestValidateLlmResponse:
             "thoughts": None
         })
 
-        with pytest.raises(Exception) as exc_info:
-            llm._validate_llm_response(response)
+        # Pydantic doesn't have retry logic - it just raises ValidationError
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert "Maximum retries reached" in str(exc_info.value)
+    def test_retry_increments(self):
+        """Test that Pydantic consistently raises errors (no retry state)"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-    def test_retry_increments(self, llm):
-        """Test that retries increment correctly on each validation failure"""
-        assert llm.retries == 0
-
-        # First invalid response
         response = json.dumps({"task_done": "invalid"})
-        llm._validate_llm_response(response)
-        assert llm.retries == 1
 
-        # Second invalid response
-        llm._validate_llm_response(response)
-        assert llm.retries == 2
+        # Each validation attempt raises error independently
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        # Third invalid response
-        llm._validate_llm_response(response)
-        assert llm.retries == 3
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-    def test_valid_response_with_result_string(self, llm):
+    def test_valid_response_with_result_string(self):
         """Test validation with result as a string"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": True,
             "command": "",
             "thoughts": "Analysis complete: Found 5 errors"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.thoughts == "Analysis complete: Found 5 errors"
 
-        assert valid is True
-        assert llm_response.thoughts == "Analysis complete: Found 5 errors"
-
-    def test_valid_response_with_null_result(self, llm):
+    def test_valid_response_with_null_result(self):
         """Test validation with result as null"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "ls -la",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.thoughts is None
 
-        assert valid is True
-        assert llm_response.thoughts is None
-
-    def test_command_with_special_characters(self, llm):
+    def test_command_with_special_characters(self):
         """Test validation with command containing special characters"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "echo 'Hello \"World\"' | grep -i 'world'",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.command == "echo 'Hello \"World\"' | grep -i 'world'"
 
-        assert valid is True
-        assert llm_response.command == "echo 'Hello \"World\"' | grep -i 'world'"
+    def test_extra_fields_ignored(self):
+        """Test that extra fields in response are forbidden"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-    def test_extra_fields_ignored(self, llm):
-        """Test that extra fields in response are ignored"""
         response = json.dumps({
             "task_done": False,
             "command": "echo test",
             "thoughts": None,
-            "extra_field": "should be ignored",
+            "extra_field": "should be forbidden",
             "another_extra": 123
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        # With extra='forbid', this should raise ValidationError
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is True
-        assert not hasattr(llm_response, "extra_field")
-        assert not hasattr(llm_response, "another_extra")
-
-    def test_task_done_false_boolean(self, llm):
+    def test_task_done_false_boolean(self):
         """Test validation with task_done explicitly set to False"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "pwd",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.task_done is False
 
-        assert valid is True
-        assert llm_response.task_done is False
-
-    def test_task_done_true_boolean(self, llm):
+    def test_task_done_true_boolean(self):
         """Test validation with task_done explicitly set to True"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": True,
             "command": "",
             "thoughts": "All tasks completed"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.task_done is True
 
-        assert valid is True
-        assert llm_response.task_done is True
-
-    def test_command_with_newlines(self, llm):
+    def test_command_with_newlines(self):
         """Test validation with multi-line command"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "for i in 1 2 3; do\n  echo $i\ndone",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert "\n" in parsed.command
 
-        assert valid is True
-        assert "\n" in llm_response.command
+    def test_error_message_appended_to_messages(self):
+        """Test that Pydantic provides detailed error messages"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-    def test_error_message_appended_to_messages(self, llm):
-        """Test that error messages are appended to messages list"""
         response = json.dumps({
             "task_done": "not a boolean",
             "command": "test",
             "thoughts": None
         })
 
-        initial_message_count = len(llm.messages)
-        llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert len(llm.messages) == initial_message_count + 1
-        assert llm.messages[-1]["role"] == "user"
-        assert "LLM_RES_ERROR" in llm.messages[-1]["content"]
+        # Pydantic provides detailed error info
+        assert len(exc_info.value.errors()) > 0
 
-    def test_multiple_validation_failures(self, llm):
-        """Test multiple consecutive validation failures"""
-        # First failure - invalid JSON
-        llm._validate_llm_response("invalid json")
-        assert llm.retries == 1
+    def test_multiple_validation_failures(self):
+        """Test multiple fields with validation errors"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-        # Second failure - missing fields
-        llm._validate_llm_response(json.dumps({"task_done": False}))
-        assert llm.retries == 2
-
-        # Third failure - empty command
-        llm._validate_llm_response(json.dumps({
-            "task_done": False,
-            "command": "",
+        # Missing command field AND task_done is wrong type
+        response = json.dumps({
+            "task_done": "not boolean",
             "thoughts": None
-        }))
-        assert llm.retries == 3
+        })
 
-        # Should have 3 error messages
-        assert len(llm.messages) == 3
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
+
+        # Should have errors for multiple fields
+        errors = exc_info.value.errors()
+        assert len(errors) >= 1
+
 
 @pytest.mark.unit
 class TestLlmOutputFormatStr:
@@ -409,340 +401,209 @@ class TestConcreteLLMImplementation:
 
 @pytest.mark.unit
 class TestValidateLlmResponseAdditionalCases:
-    """Additional test cases to cover all branches in _validate_llm_response"""
+    """Additional Pydantic validation test cases"""
 
-    @pytest.fixture
-    def llm(self):
-        """Create a concrete LLM instance for testing"""
-        return ConcreteLLM(max_retries=3)
-
-    def test_command_is_integer_not_string(self, llm):
+    def test_command_is_integer_not_string(self):
         """Test validation when command is an integer instead of string"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": 123,  # Integer, not string
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "command" in llm.messages[0]["content"]
-        assert "non-empty string" in llm.messages[0]["content"]
+        assert any(error['loc'][0] == 'command' for error in exc_info.value.errors())
 
-    def test_missing_fields_error_message(self, llm):
-        """Test that missing fields produces correct error message"""
-        response = json.dumps({
-            "task_done": False,
-            # Missing "command" and "thoughts"
-        })
-
-        valid, llm_response = llm._validate_llm_response(response)
-
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "missing required fields" in llm.messages[0]["content"]
-        assert "LLM_RES_ERROR" in llm.messages[0]["content"]
-
-    def test_only_task_done_field_present(self, llm):
+    def test_only_task_done_field_present(self):
         """Test validation with only task_done field"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": True
-            # Missing command and result
+            # Missing command and thoughts
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_only_command_field_present(self, llm):
+    def test_only_command_field_present(self):
         """Test validation with only command field"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "command": "echo test"
-            # Missing task_done and result
+            # Missing task_done and thoughts
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_logger_error_on_max_retries(self, llm, caplog):
-        """Test that error is logged when max retries is exceeded"""
-        import logging
-
-        llm.retries = 3  # Set to max
-
-        response = json.dumps({
-            "task_done": False,
-            "command": "",
-            "thoughts": None
-        })
-
-        with caplog.at_level(logging.ERROR):
-            with pytest.raises(Exception):
-                llm._validate_llm_response(response)
-
-        # Check if error was logged (depends on logger configuration)
-
-    def test_logger_warning_on_invalid_json(self, llm, caplog):
-        """Test that warning is logged for invalid JSON"""
-        import logging
-
-        with caplog.at_level(logging.WARNING):
-            llm._validate_llm_response("not valid json")
-
-        # Check that warning was logged
-
-    def test_logger_info_on_valid_response(self, llm, caplog):
-        """Test that info is logged for valid response"""
-        import logging
-
-        response = json.dumps({
-            "task_done": False,
-            "command": "echo test",
-            "thoughts": None
-        })
-
-        with caplog.at_level(logging.INFO):
-            llm._validate_llm_response(response)
-
-        # Check that info was logged
-
-    def test_task_done_as_string_true(self, llm):
+    def test_task_done_as_string_true(self):
         """Test validation when task_done is string 'true' instead of boolean"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": "true",  # String instead of boolean
             "command": "",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert "boolean" in llm.messages[0]["content"]
+    def test_task_done_as_integer(self):
+        """Test validation when task_done is integer (2) instead of boolean"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-    def test_task_done_as_integer(self, llm):
-        """Test validation when task_done is integer (1/0) instead of boolean"""
-        # Note: In Python, 1 in [True, False] evaluates to True because 1 == True
-        # So this actually passes the boolean check. Testing with value 2 instead.
         response = json.dumps({
             "task_done": 2,  # Integer that's not 0 or 1
             "command": "test",
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_result_field_missing_but_valid(self, llm):
-        """Test that missing result field causes validation to fail"""
-        # The validation checks that ALL fields are present using all(key in response_dict ...)
-        # So missing result field will fail the validation
-        response = json.dumps({
-            "task_done": False,
-            "command": "echo test"
-            # result is missing - this should FAIL validation
-        })
-
-        valid, llm_response = llm._validate_llm_response(response)
-
-        # Should be invalid because result field is missing
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_command_with_only_spaces_when_task_not_done(self, llm):
+    def test_command_with_only_spaces_when_task_not_done(self):
         """Test that command with only spaces is invalid when task_done=False"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": "     ",  # Only spaces
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_command_with_tabs_when_task_not_done(self, llm):
+    def test_command_with_tabs_when_task_not_done(self):
         """Test that command with tabs/whitespace is invalid when task_done=False"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": False,
             "command": "\t\t\t",  # Only tabs
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-
-    def test_command_with_leading_trailing_spaces_valid(self, llm):
+    def test_command_with_leading_trailing_spaces_valid(self):
         """Test that command with leading/trailing spaces but content is valid"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": False,
             "command": "  echo test  ",  # Has actual content
             "thoughts": None
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
-
         # This should be valid because strip() shows it has content
-        assert valid is True
-        assert llm_response.command == "  echo test  "
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.command == "  echo test  "
 
-    def test_task_done_true_with_whitespace_command(self, llm):
-        """Test that task_done=True with whitespace-only command is invalid"""
+    def test_task_done_true_with_whitespace_command(self):
+        """Test that task_done=True with whitespace-only command is valid"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": True,
-            "command": "   ",  # Whitespace
+            "command": "   ",  # Whitespace treated as empty
             "thoughts": "Done"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
-
         # This is valid because strip() == "", which is allowed when task_done=True
-        assert valid is True
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.task_done is True
 
-    def test_json_with_comments_fails(self, llm):
+    def test_json_with_comments_fails(self):
         """Test that JSON with comments fails to parse"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = """{
             "task_done": false,  // This is a comment
             "command": "test",
             "thoughts": null
         }"""
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises((json.JSONDecodeError, ValueError)):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_empty_string_response(self, llm):
+    def test_empty_string_response(self):
         """Test validation with empty string response"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = ""
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises((json.JSONDecodeError, ValueError)):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-
-    def test_null_response(self, llm):
-        """Test validation with JSON null - causes TypeError"""
-        response = "null"
-
-        # When json.loads("null") is called, it returns None (not a dict)
-        # This causes a TypeError when checking "key in response_dict"
-        # The TypeError should be caught as a general exception
-        with pytest.raises(Exception):
-            llm._validate_llm_response(response)
-
-    def test_array_response(self, llm):
+    def test_array_response(self):
         """Test validation with JSON array instead of object"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps([{"task_done": False, "command": "test"}])
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        assert valid is False
-        assert llm_response is None
-
-    def test_result_with_empty_string(self, llm):
+    def test_result_with_empty_string(self):
         """Test that result can be an empty string"""
+        from microbots.llm.llm import LLMAskResponseModel
+
         response = json.dumps({
             "task_done": True,
             "command": "",
             "thoughts": ""  # Empty string result
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        parsed = LLMAskResponseModel.model_validate_json(response)
+        assert parsed.thoughts == ""
 
-        assert valid is True
-        assert llm_response.thoughts == ""
-
-    def test_all_error_messages_contain_format_string(self, llm):
-        """Test that all error messages include the format string"""
-        error_scenarios = [
-            "invalid json",
-            json.dumps({"task_done": "invalid"}),
-            json.dumps({"task_done": False, "command": ""}),
-            json.dumps({"task_done": True, "command": "should be empty"}),
-            json.dumps({"task_done": False}),  # Missing fields
-        ]
-
-        for scenario in error_scenarios:
-            llm_test = ConcreteLLM(max_retries=5)
-            llm_test._validate_llm_response(scenario)
-
-            # Check that format string is in the error message
-            if len(llm_test.messages) > 0:
-                assert llm_output_format_str in llm_test.messages[-1]["content"]
-
-    def test_task_done_true_with_missing_command_field(self, llm):
-        """Test validation when task_done is True but command field is missing entirely"""
-        response = json.dumps({
-            "task_done": True,
-            # "command" field is missing
-            "thoughts": "Task completed"
-        })
-
-        valid, llm_response = llm._validate_llm_response(response)
-
-        # Should be invalid because command field is required (missing field check)
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert len(llm.messages) == 1
-        assert "missing required fields" in llm.messages[0]["content"]
-
-    def test_task_done_true_with_none_command_field(self, llm):
+    def test_task_done_true_with_none_command_field(self):
         """Test validation when task_done is True but command field None"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
+
         response = json.dumps({
             "task_done": True,
             "command": None,
             "thoughts": "Task completed"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        # None is not a valid string, should fail for backward compatibility
+        with pytest.raises(ValidationError):
+            LLMAskResponseModel.model_validate_json(response)
 
-        # Should be invalid because command field is required (missing field check)
-        assert valid is True
-        assert llm_response.task_done is True
-        assert llm_response.command is None
-        assert llm_response.thoughts == "Task completed"
-        assert llm.retries == 0
-        assert len(llm.messages) == 0
+    def test_task_done_true_with_not_none_command_field(self):
+        """Test validation when task_done is True but command field is not empty"""
+        from microbots.llm.llm import LLMAskResponseModel
+        from pydantic import ValidationError
 
-
-    def test_task_done_true_with_not_none_command_field(self, llm):
-        """Test validation when task_done is True but command field is not None"""
         response = json.dumps({
             "task_done": True,
             "command": "not empty",
             "thoughts": "Task completed"
         })
 
-        valid, llm_response = llm._validate_llm_response(response)
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel.model_validate_json(response)
 
-        # Should be invalid because command field is required (missing field check)
-        assert valid is False
-        assert llm_response is None
-        assert llm.retries == 1
-        assert len(llm.messages) == 1
-        assert "When 'task_done' is true, 'command' should be an empty string." in llm.messages[0]["content"]
+        assert "empty" in str(exc_info.value).lower()
 
 
 @pytest.mark.unit
@@ -767,7 +628,6 @@ class TestSummarizeContext:
         # Add a final message that will be popped (the summarization request)
         llm.messages.append({"role": "user", "content": "Please summarize"})
 
-        initial_len = len(llm.messages)
         last_msg = llm.summarize_context(last_n_messages=10, summary="This is a summary")
 
         # Should have: 1 system prompt + 18 recent messages (10*2-1 minus last one)

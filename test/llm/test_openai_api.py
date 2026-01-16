@@ -5,14 +5,14 @@ import pytest
 import json
 import sys
 import os
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 from dataclasses import asdict
 
 # Add src to path for imports
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
 
 from microbots.llm.openai_api import OpenAIApi
-from microbots.llm.llm import LLMAskResponse, LLMInterface
+from microbots.llm.llm import LLMAskResponse, LLMInterface, LLMAskResponseModel
 
 
 @pytest.fixture(autouse=True)
@@ -88,14 +88,11 @@ class TestOpenAIApiAsk:
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=False, command="echo 'hello'", thoughts="")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "echo 'hello'",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         message = "Please say hello"
@@ -105,10 +102,7 @@ class TestOpenAIApiAsk:
         assert isinstance(result, LLMAskResponse)
         assert result.task_done is False
         assert result.command == "echo 'hello'"
-        assert result.thoughts == "" or result.thoughts is None
-
-        # Verify retries was reset
-        assert api.retries == 0
+        assert result.thoughts == ""
 
         # Verify messages were appended
         assert len(api.messages) == 3  # system + user + assistant
@@ -121,14 +115,11 @@ class TestOpenAIApiAsk:
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=True, command="", thoughts="Task completed successfully")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": True,
-            "command": "",
-            "thoughts": "Task completed successfully"
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("Complete the task")
@@ -138,35 +129,27 @@ class TestOpenAIApiAsk:
         assert result.command == ""
         assert result.thoughts == "Task completed successfully"
 
-    def test_ask_with_retry_on_invalid_response(self):
-        """Test ask method retries on invalid response then succeeds"""
+    def test_ask_with_structured_output(self):
+        """Test ask method uses structured output (no retries needed)"""
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client to return invalid then valid response
-        mock_invalid_response = Mock()
-        mock_invalid_response.output_text = "invalid json"
-
-        mock_valid_response = Mock()
-        mock_valid_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "ls -la",
-            "thoughts": None
-        })
-
-        api.ai_client.responses.create = Mock(
-            side_effect=[mock_invalid_response, mock_valid_response]
-        )
+        # Mock the OpenAI client response - structured output guarantees valid schema
+        mock_parsed = LLMAskResponseModel(task_done=False, command="ls -la", thoughts="Listing files")
+        mock_response = Mock()
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("List files")
 
-        # Verify it eventually succeeded
+        # Verify it succeeded on first try
         assert result.task_done is False
         assert result.command == "ls -la"
+        assert result.thoughts == "Listing files"
 
-        # Verify it called the API twice (retry happened)
-        assert api.ai_client.responses.create.call_count == 2
+        # Verify it called the API only once (no retries with structured output)
+        assert api.ai_client.responses.parse.call_count == 1
 
     def test_ask_appends_user_message(self):
         """Test that ask appends user message to messages list"""
@@ -175,14 +158,11 @@ class TestOpenAIApiAsk:
 
         initial_message_count = len(api.messages)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=False, command="pwd", thoughts="")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "pwd",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         user_message = "What directory am I in?"
@@ -198,14 +178,11 @@ class TestOpenAIApiAsk:
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=False, command="echo test", thoughts="")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "echo test",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         api.ask("Run echo test")
@@ -218,22 +195,18 @@ class TestOpenAIApiAsk:
         assistant_content = json.loads(assistant_messages[-1]["content"])
         assert assistant_content["task_done"] is False
         assert assistant_content["command"] == "echo test"
-        assert assistant_content["thoughts"] is None
+        assert assistant_content["thoughts"] == ""
 
     def test_ask_uses_asdict_for_response(self):
         """Test that ask uses asdict to convert LLMAskResponse to dict"""
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=True, command="", thoughts="Done")
         mock_response = Mock()
-        response_dict = {
-            "task_done": True,
-            "command": "",
-            "thoughts": "Done"
-        }
-        mock_response.output_text = json.dumps(response_dict)
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("Complete task")
@@ -245,28 +218,24 @@ class TestOpenAIApiAsk:
         expected = asdict(result)
         assert assistant_msg == expected
 
-    def test_ask_resets_retries_to_zero(self):
-        """Test that ask resets retries to 0 at the start"""
+    def test_ask_with_pydantic_validation(self):
+        """Test that structured output uses Pydantic validation"""
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Set retries to a non-zero value
-        api.retries = 5
-
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with valid Pydantic model
+        mock_parsed = LLMAskResponseModel(task_done=False, command="ls", thoughts="Checking directory")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "ls",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask
-        api.ask("List files")
+        result = api.ask("List files")
 
-        # Verify retries was reset to 0
-        assert api.retries == 0
+        # Verify structured output was used
+        assert isinstance(result, LLMAskResponse)
+        assert result.command == "ls"
+        assert result.thoughts == "Checking directory"
 
 
 @pytest.mark.unit
@@ -355,14 +324,11 @@ class TestOpenAIApiEdgeCases:
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=False, command="echo ''", thoughts="")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "echo ''",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Call ask with empty message
         result = api.ask("")
@@ -376,14 +342,11 @@ class TestOpenAIApiEdgeCases:
         system_prompt = "You are a helpful assistant"
         api = OpenAIApi(system_prompt=system_prompt)
 
-        # Mock the OpenAI client response
+        # Mock the OpenAI client response with structured output
+        mock_parsed = LLMAskResponseModel(task_done=False, command="pwd", thoughts="")
         mock_response = Mock()
-        mock_response.output_text = json.dumps({
-            "task_done": False,
-            "command": "pwd",
-            "thoughts": None
-        })
-        api.ai_client.responses.create = Mock(return_value=mock_response)
+        mock_response.output_parsed = mock_parsed
+        api.ai_client.responses.parse = Mock(return_value=mock_response)
 
         # Make multiple ask calls
         api.ask("First question")
@@ -399,3 +362,68 @@ class TestOpenAIApiEdgeCases:
         assert user_messages[0]["content"] == "First question"
         assert user_messages[1]["content"] == "Second question"
         assert user_messages[2]["content"] == "Third question"
+
+
+@pytest.mark.unit
+class TestOpenAIApiValidation:
+    """Tests for validation error handling in OpenAI API"""
+
+    def test_invalid_response_task_done_true_with_command(self, patch_openai_config):
+        """Test that Pydantic validation catches invalid response: task_done=True with non-empty command"""
+        from pydantic import ValidationError
+
+        system_prompt = "You are a helpful assistant"
+        api = OpenAIApi(system_prompt=system_prompt)
+
+        mock_client = patch_openai_config.return_value
+        mock_response = Mock()
+
+        # Mock invalid output: task_done=True but command is not empty
+        try:
+            mock_parsed = LLMAskResponseModel(task_done=True, command="ls -la", thoughts="Invalid")
+            # This should raise ValidationError, test should not reach here
+            pytest.fail("Expected ValidationError but model was created successfully")
+        except ValidationError as e:
+            # This is expected - validation should fail
+            assert 'command' in str(e)
+            assert 'empty' in str(e).lower()
+
+    def test_invalid_response_task_done_false_with_empty_command(self, patch_openai_config):
+        """Test that Pydantic validation catches invalid response: task_done=False with empty command"""
+        from pydantic import ValidationError
+
+        system_prompt = "You are a helpful assistant"
+        api = OpenAIApi(system_prompt=system_prompt)
+
+        # Mock invalid output: task_done=False but command is empty
+        with pytest.raises(ValidationError) as exc_info:
+            mock_parsed = LLMAskResponseModel(task_done=False, command="", thoughts="Invalid")
+
+        assert 'command' in str(exc_info.value)
+        assert 'non-empty' in str(exc_info.value).lower()
+
+    def test_api_propagates_validation_error(self, patch_openai_config):
+        """Test that ValidationError from structured output propagates correctly"""
+        from pydantic import ValidationError
+
+        system_prompt = "You are a helpful assistant"
+        api = OpenAIApi(system_prompt=system_prompt)
+
+        mock_client = patch_openai_config.return_value
+
+        # Simulate the API trying to parse invalid data by having output_parsed creation fail
+        def side_effect_validation_error(*args, **kwargs):
+            # This simulates what happens when structured output returns invalid data
+            # The API will try to access response.output_parsed, which internally validates
+            mock_response = Mock()
+            # When accessing output_parsed, trigger validation by creating invalid model
+            type(mock_response).output_parsed = property(lambda self: LLMAskResponseModel(
+                task_done=True, command="ls", thoughts="Invalid"
+            ))
+            return mock_response
+
+        mock_client.responses.parse.side_effect = side_effect_validation_error
+
+        # The ask() method should propagate the ValidationError
+        with pytest.raises(ValidationError):
+            api.ask("test message")

@@ -4,7 +4,7 @@ from dataclasses import asdict
 
 from dotenv import load_dotenv
 from openai import OpenAI
-from microbots.llm.llm import LLMAskResponse, LLMInterface
+from microbots.llm.llm import LLMAskResponse, LLMInterface, LLMAskResponseModel
 
 load_dotenv()
 
@@ -21,21 +21,28 @@ class OpenAIApi(LLMInterface):
         super().__init__(system_prompt=system_prompt, max_retries=max_retries)
 
     def ask(self, message) -> LLMAskResponse:
-        self.retries = 0 # reset retries for each ask. Handled in parent class.
-
         self.messages.append({"role": "user", "content": message})
 
-        valid = False
-        while not valid:
-            response = self.ai_client.responses.create(
-                model=self.deployment_name,
-                input=self.messages,
-            )
-            self.messages.append({"role": "assistant", "content": response.output_text})
-            valid, askResponse = self._validate_llm_response(response=response.output_text)
+        # Use structured output via responses.parse()
+        response = self.ai_client.responses.parse(
+            model=self.deployment_name,
+            input=self.messages,
+            text_format=LLMAskResponseModel,
+        )
 
-        # Remove last assistant message and replace with structured response
-        self.messages.pop()
+        # Get the parsed Pydantic object
+        parsed = response.output_parsed
+        if parsed is None:
+            raise ValueError("Structured output parsing failed - received None from OpenAI API")
+
+        # Convert to LLMAskResponse dataclass for backward compatibility
+        askResponse = LLMAskResponse(
+            task_done=parsed.task_done,
+            command=parsed.command,
+            thoughts=parsed.thoughts or "",  # Convert None to empty string
+        )
+
+        # Add assistant message with structured response
         self.messages.append({"role": "assistant", "content": json.dumps(asdict(askResponse))})
 
         return askResponse
@@ -48,4 +55,3 @@ class OpenAIApi(LLMInterface):
             }
         ]
         return True
-

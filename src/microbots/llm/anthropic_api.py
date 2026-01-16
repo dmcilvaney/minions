@@ -5,7 +5,7 @@ from logging import getLogger
 
 from dotenv import load_dotenv
 from anthropic import Anthropic
-from microbots.llm.llm import LLMAskResponse, LLMInterface
+from microbots.llm.llm import LLMAskResponse, LLMInterface, LLMAskResponseModel
 
 logger = getLogger(__name__)
 
@@ -27,30 +27,28 @@ class AnthropicApi(LLMInterface):
         super().__init__(system_prompt=system_prompt, max_retries=max_retries)
 
     def ask(self, message) -> LLMAskResponse:
-        self.retries = 0  # reset retries for each ask. Handled in parent class.
-
         self.messages.append({"role": "user", "content": message})
 
-        valid = False
-        while not valid:
-            response = self.ai_client.messages.create(
-                model=self.deployment_name,
-                system=self.system_prompt,
-                messages=self.messages,
-                max_tokens=4096,
-            )
+        # Use beta.messages.parse() for structured outputs with Pydantic
+        response = self.ai_client.beta.messages.parse(
+            model=self.deployment_name,
+            system=self.system_prompt,
+            messages=self.messages,
+            max_tokens=4096,
+            betas=["structured-outputs-2025-11-13"],
+            output_format=LLMAskResponseModel,
+        )
 
-            # Extract text content from response
-            response_text = response.content[0].text if response.content else ""
-            logger.debug("Raw Anthropic response (first 500 chars): %s", response_text[:500])
+        # Parse structured response from Anthropic
+        parsed = response.parsed_output
+        if parsed is None:
+            raise ValueError("Structured output parsing failed - received None from Anthropic API")
 
-            # Try to extract JSON if wrapped in markdown code blocks
-            import re
-            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-            if json_match:
-                response_text = json_match.group(1)
-
-            valid, askResponse = self._validate_llm_response(response=response_text)
+        askResponse = LLMAskResponse(
+            task_done=parsed.task_done,
+            command=parsed.command,
+            thoughts=parsed.thoughts or "",  # Convert None to empty string
+        )
 
         self.messages.append({"role": "assistant", "content": json.dumps(asdict(askResponse))})
 

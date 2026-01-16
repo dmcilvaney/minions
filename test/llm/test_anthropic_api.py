@@ -95,19 +95,18 @@ class TestAnthropicApiAsk:
 
     def test_ask_successful_response(self):
         """Test ask method with successful response"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "echo 'hello'",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="echo 'hello'",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         message = "Please say hello"
@@ -131,19 +130,18 @@ class TestAnthropicApiAsk:
 
     def test_ask_with_task_done_true(self):
         """Test ask method when task is complete"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": True,
-            "command": "",
-            "thoughts": "Task completed successfully"
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=True,
+            command="",
+            thoughts="Task completed successfully"
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("Complete the task")
@@ -154,56 +152,46 @@ class TestAnthropicApiAsk:
         assert result.thoughts == "Task completed successfully"
 
     def test_ask_with_retry_on_invalid_response(self):
-        """Test ask method retries on invalid response then succeeds"""
+        """Test ask method with structured output - no more retries needed"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client to return invalid then valid response
-        mock_invalid_response = Mock()
-        mock_invalid_content = Mock()
-        mock_invalid_content.text = "invalid json"
-        mock_invalid_response.content = [mock_invalid_content]
-
-        mock_valid_response = Mock()
-        mock_valid_content = Mock()
-        mock_valid_content.text = json.dumps({
-            "task_done": False,
-            "command": "ls -la",
-            "thoughts": ""
-        })
-        mock_valid_response.content = [mock_valid_content]
-
-        api.ai_client.messages.create = Mock(
-            side_effect=[mock_invalid_response, mock_valid_response]
+        # Mock the Anthropic client response with structured output (no retries needed)
+        mock_response = Mock()
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="ls -la",
+            thoughts=""
         )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("List files")
 
-        # Verify it eventually succeeded
+        # Verify it succeeded
         assert result.task_done is False
         assert result.command == "ls -la"
 
-        # Verify it called the API twice (retry happened)
-        assert api.ai_client.messages.create.call_count == 2
+        # Verify it called the API once (no retries with structured output)
+        assert api.ai_client.beta.messages.parse.call_count == 1
 
     def test_ask_appends_user_message(self):
         """Test that ask appends user message to messages list"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
         initial_message_count = len(api.messages)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "pwd",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="pwd",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         user_message = "What directory am I in?"
@@ -216,19 +204,18 @@ class TestAnthropicApiAsk:
 
     def test_ask_appends_assistant_response_as_json(self):
         """Test that ask appends assistant response as JSON string"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "echo test",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="echo test",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         api.ask("Run echo test")
@@ -245,20 +232,18 @@ class TestAnthropicApiAsk:
 
     def test_ask_uses_asdict_for_response(self):
         """Test that ask uses asdict to convert LLMAskResponse to dict"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        response_dict = {
-            "task_done": True,
-            "command": "",
-            "thoughts": "Done"
-        }
-        mock_content.text = json.dumps(response_dict)
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=True,
+            command="",
+            thoughts="Done"
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("Complete task")
@@ -271,53 +256,49 @@ class TestAnthropicApiAsk:
         assert assistant_msg == expected
 
     def test_ask_resets_retries_to_zero(self):
-        """Test that ask resets retries to 0 at the start"""
+        """Test that ask works correctly with structured output (retries no longer used)"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
         # Set retries to a non-zero value
         api.retries = 5
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "ls",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="ls",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
-        api.ask("List files")
+        result = api.ask("List files")
 
-        # Verify retries was reset to 0
-        assert api.retries == 0
+        # Verify the response is correct (structured output eliminates need for retries)
+        assert result.task_done is False
+        assert result.command == "ls"
 
     def test_ask_extracts_json_from_markdown(self):
-        """Test that ask extracts JSON from markdown code blocks"""
+        """Test that structured output doesn't need markdown extraction"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock response with markdown-wrapped JSON
+        # Mock structured output response (no markdown extraction needed)
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = """Here's the response:
-```json
-{
-    "task_done": false,
-    "command": "cat file.txt",
-    "thoughts": ""
-}
-```"""
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="cat file.txt",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask
         result = api.ask("Read the file")
 
-        # Verify JSON was extracted successfully
+        # Verify response is correct (structured output handles parsing)
         assert result.task_done is False
         assert result.command == "cat file.txt"
 
@@ -419,19 +400,18 @@ class TestAnthropicApiEdgeCases:
 
     def test_ask_with_empty_message(self):
         """Test ask with empty string message"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "echo ''",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="echo ''",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Call ask with empty message
         result = api.ask("")
@@ -442,19 +422,18 @@ class TestAnthropicApiEdgeCases:
 
     def test_multiple_ask_calls_append_messages(self):
         """Test that multiple ask calls append all messages"""
+        from microbots.llm.llm import LLMAskResponseModel
         system_prompt = "You are a helpful assistant"
         api = AnthropicApi(system_prompt=system_prompt)
 
-        # Mock the Anthropic client response
+        # Mock the Anthropic client response with structured output
         mock_response = Mock()
-        mock_content = Mock()
-        mock_content.text = json.dumps({
-            "task_done": False,
-            "command": "pwd",
-            "thoughts": ""
-        })
-        mock_response.content = [mock_content]
-        api.ai_client.messages.create = Mock(return_value=mock_response)
+        mock_response.parsed_output = LLMAskResponseModel(
+            task_done=False,
+            command="pwd",
+            thoughts=""
+        )
+        api.ai_client.beta.messages.parse = Mock(return_value=mock_response)
 
         # Make multiple ask calls
         api.ask("First question")
@@ -517,6 +496,66 @@ class TestAnthropicApiIntegration:
         assert len(api.messages) == 0  # clear_history empties all messages
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+@pytest.mark.unit
+class TestAnthropicApiValidation:
+    """Tests for validation error handling in Anthropic API"""
 
+    @pytest.fixture(autouse=True)
+    def _use_patch(self, patch_anthropic_config):
+        """Apply patch for unit tests"""
+        pass
+
+    def test_invalid_response_task_done_true_with_command(self):
+        """Test that Pydantic validation catches invalid response: task_done=True with non-empty command"""
+        from pydantic import ValidationError
+        from microbots.llm.llm import LLMAskResponseModel
+
+        system_prompt = "You are a helpful assistant"
+        api = AnthropicApi(system_prompt=system_prompt)
+
+        # Try to create invalid model - should raise ValidationError
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel(task_done=True, command="ls -la", thoughts="Invalid")
+
+        assert 'command' in str(exc_info.value)
+        assert 'empty' in str(exc_info.value).lower()
+
+    def test_invalid_response_task_done_false_with_empty_command(self):
+        """Test that Pydantic validation catches invalid response: task_done=False with empty command"""
+        from pydantic import ValidationError
+        from microbots.llm.llm import LLMAskResponseModel
+
+        system_prompt = "You are a helpful assistant"
+        api = AnthropicApi(system_prompt=system_prompt)
+
+        # Try to create invalid model - should raise ValidationError
+        with pytest.raises(ValidationError) as exc_info:
+            LLMAskResponseModel(task_done=False, command="", thoughts="Invalid")
+
+        assert 'command' in str(exc_info.value)
+        assert 'non-empty' in str(exc_info.value).lower()
+
+    def test_api_propagates_validation_error(self, patch_anthropic_config):
+        """Test that ValidationError from structured output propagates correctly"""
+        from pydantic import ValidationError
+        from microbots.llm.llm import LLMAskResponseModel
+
+        system_prompt = "You are a helpful assistant"
+        api = AnthropicApi(system_prompt=system_prompt)
+
+        mock_client = patch_anthropic_config.return_value
+
+        # Simulate the API trying to parse invalid data
+        def side_effect_validation_error(*args, **kwargs):
+            mock_response = Mock()
+            # When accessing parsed_output, trigger validation by creating invalid model
+            type(mock_response).parsed_output = property(lambda self: LLMAskResponseModel(
+                task_done=True, command="ls", thoughts="Invalid"
+            ))
+            return mock_response
+
+        mock_client.beta.messages.parse.side_effect = side_effect_validation_error
+
+        # The ask() method should propagate the ValidationError
+        with pytest.raises(ValidationError):
+            api.ask("test message")
